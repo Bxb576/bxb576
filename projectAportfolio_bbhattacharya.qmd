@@ -1,0 +1,1005 @@
+---
+title: "Predicting Height and Anxiety Disorder in Children Between the Ages of 6-17"
+subtitle: "How Age, Childhood Experiences, Sleep, and Family Can Contribute"
+author: "Brooke Bhattacharya"
+date: last-modified
+format: 
+  html:
+    toc: true
+    number-sections: true
+    code-fold: show
+    code-tools: true
+    code-overflow: wrap
+    embed-resources: true
+    date-format: iso
+    theme: united 
+editor_options: 
+  chunk_output_type: inline
+---
+
+## R Packages and Setup {.unnumbered}
+
+```{r}
+#| message: false
+#| warning: false
+
+knitr::opts_chunk$set(comment = NA)
+
+library(janitor)
+library(naniar)
+library(broom)
+library(car)
+library(caret)
+library(GGally)
+library(gt)
+library(gtsummary)
+library(knitr)
+library(mice)
+library(mosaic)
+library(patchwork)
+library(ROCR)
+library(rsample)
+library(rms)
+library(patchwork)
+library(haven)
+library(survey)
+library(utils)
+library(naniar)
+library(ggplot2)
+library(easystats)
+library(tidyverse) 
+
+theme_set(theme_bw()) 
+```
+
+# Data Source
+
+For this project, I will be using data sourced from The National Survey of Children's Health (NSCH), from the year 2023. The NSCH is a yearly survey focused on collecting extensive demographic, health (mental and physical), family, school, and neighborhood survey responses from children in families within America. 
+
+# The Subjects
+
+The National Survey of Children’s Health (NSCH) collects data on children 6-17 years old in the United States via questionnaire. The 2023 NSCH data were collected from June 2023 to January 2024, and consisted of information on 55,162 children, within the above mentioned age range, after screening and eligibility checks. This is also the number of completed questionnaires for the NSCH in 2023.
+
+# Loading and Tidying the Data
+
+## Loading the Raw Data
+
+```{r}
+NSCH23Url <- "https://www2.census.gov/programs-surveys/nsch/datasets/2023/nsch_2023e_topical_SAS.zip" 
+download.file(NSCH23Url, destfile = "NSCH23.zip", mode = "wb")
+unzip("NSCH23.zip", exdir = "NSCH23")
+NSCH23D <- list.files("NSCH23", full.names = TRUE)
+NSCH23D <- read_sas("C:/432/Project A/NSCH23/nsch_2023e_topical.sas7bdat")
+```
+
+## Cleaning the Data
+
+### Selecting Variables
+
+```{r}
+
+NSCH23_tibble <- NSCH23D %>%
+  select(
+    HHID, SC_SEX, SC_AGE_YEARS, HEIGHT, ACE3, HOURSLEEP, K2Q31A, K2Q31B, K2Q31C,
+    K2Q31D, K11Q43R, K2Q33A, ACE3, MAKEFRIEND, FAMILY_R, BIRTHWT_L) %>%
+  mutate(across(where(is.character), as.factor)) |>  
+  mutate(HHID = as.character(HHID)) |>
+  as_tibble()
+
+NSCH23_tibble <- NSCH23_tibble %>%
+  arrange(HHID)
+```
+
+
+### Working with Categorical Predictors
+
+```{r}
+NSCH23 <- NSCH23_tibble %>%
+  mutate(
+    K2Q31A = fct_recode(factor(K2Q31A), "Yes" = "1"),
+    K2Q31B = fct_recode(factor(K2Q31B), "Yes" = "1"),
+    SC_SEX = fct_recode(factor(SC_SEX), "Male" = "1", "Female" = "2")) %>%
+  filter(
+    K2Q31A == "Yes",
+    K2Q31B == "Yes",
+    SC_SEX == "Female",
+    SC_AGE_YEARS >= 6,
+    SC_AGE_YEARS <= 17)
+
+NSCH23 <- NSCH23 %>%
+  mutate(
+    HOURSLEEP = case_when(
+      HOURSLEEP %in% c(1, 2, 3) ~ "Low",
+      HOURSLEEP %in% c(4, 5) ~ "Ideal",
+      HOURSLEEP %in% c(6, 7) ~ "High"),
+    HOURSLEEP = factor(HOURSLEEP),
+    FAMILY_R = case_when(
+      FAMILY_R %in% c(1, 3) ~ "Married",
+      FAMILY_R %in% c(2, 4) ~ "Unmarried",
+      FAMILY_R %in% c(5, 6) ~ "Single",
+      FAMILY_R %in% c(7, 8) ~ "Other"),
+    FAMILY_R = factor(FAMILY_R), 
+    MAKEFRIEND = case_when(
+      MAKEFRIEND == 1 ~ "None",
+      MAKEFRIEND %in% c(2, 3) ~ "Difficulty"),
+        MAKEFRIEND = factor(MAKEFRIEND), 
+    K2Q31C = fct_recode(factor(K2Q31C), "Mild" = "1", "Moderate" = "2", "Severe" = "3"),
+    K2Q31D = fct_recode(factor(K2Q31D), "Yes" = "1", "No" = "2"),
+    K2Q33A = fct_recode(factor(K2Q33A), "Yes" = "1", "No" = "2"),
+    ACE3 = fct_recode(factor(ACE3), "Yes" = "1", "No" = "2"),
+    BIRTHWT_L = fct_recode(factor(BIRTHWT_L), "Yes" = "1", "No" = "2"))
+    
+
+NSCH23 <- NSCH23 %>%
+  mutate(HOURSLEEP=fct_relevel(HOURSLEEP,c("Low", "Ideal", "High"))) %>% 
+  mutate(FAMILY_R = fct_relevel(FAMILY_R, c("Married","Unmarried", "Single", "Other")))
+```
+
+In my Project A Plan, I had not consolidated HOURSLEEP. It had an appropriate amount of values and fit the requirements of the linear regression plan and analyses, but upon getting further into the Portfolio, I found that its levels were fairly unbalanced. This seemed to prohibit its ability to produce fair results in the linear regression models in later sections. Because of this, I consolidated it to consist of only three levels: "Low", "Ideal" and "High." Similarly, due to the same issue, I consolidated MAKEFRIEND to just "None" and "Difficulty" due to issues with unbalanced levels when it had its previous three levels. I had considered converting HEIGHT to inches from centimeters, but ultimately stuck with centimeters due to readability and more easily interpretable effects. 
+
+```{r}
+NSCH23 %>%
+  count(FAMILY_R) %>%
+  filter(n < 30)
+```
+
+
+```{r}
+NSCH23 %>%
+  count(HOURSLEEP) %>%
+  filter(n < 30)
+```
+
+```{r}
+NSCH23 %>%
+  count(MAKEFRIEND) %>%
+  filter(n < 30)
+```
+
+```{r}
+NSCH23 %>%
+  count(K2Q31C) %>%
+  filter(n < 30)
+```
+
+### Changing Variable Names
+
+```{r}
+NSCH23 <- NSCH23 %>%
+  zap_label() %>% 
+  janitor::clean_names() %>% 
+  rename(sex = sc_sex,
+         age = sc_age_years,
+         height = height,
+         divorce = ace3,
+         sleep = hoursleep,
+         dx_past = k2q31a,
+         dx_now = k2q31b,
+         severity = k2q31c,
+         meds = k2q31d,
+         anxiety = k2q33a,
+         friends = makefriend,
+         family = family_r,
+         moves = k11q43r,
+         under_wt = birthwt_l)
+```
+
+### Sampling the Data
+
+No sampling was needed in this case as the total observations of the complete NSCH23 table (1715) is well below the 2000 observation limit.
+
+## Finalizing Tibble
+
+```{r}
+NSCH23 <- NSCH23 %>%
+  select(hhid, age, height, under_wt, dx_past, dx_now,
+         severity, meds, anxiety, sleep, divorce, friends, family, moves)
+```
+
+# The Tidy Tibble
+
+## Listing the Tibble
+
+```{r}
+NSCH23
+```
+
+```{r}
+identical(nrow(NSCH23), n_distinct(NSCH23))
+```
+
+There is a unique value for each variable in each row of the NSCH23 tibble, as proven by the "TRUE" value resulting above.
+
+## Size and Identifiers
+
+```{r}
+n_distinct(NSCH23)
+```
+
+There are 1,715 rows and 14 columns in the NSCH23 tibble. The identifying variable is hhid (which stands for household identifier).
+
+## Save The Tibble
+
+```{r}
+write_rds(NSCH23, "NSCH23.Rds")
+```
+
+# The Code Book
+
+## Defining the Variables
+
+The NCHS data set consists of 1,715 subjects, ages 6-17. These are identified by the HHID variable. In total, there are 14 variables observed in the data set. Out of the 1,715 observations, all 1,715 have complete data on each of the 14 variables included. The outcome variables are height, or the subject's height (converted from centimeters to inches), and anxiety, or whether or not the subject has been diagnosed with anxiety previously (by a medical professional). The predictor variables for the linear model are age, meds, severity, sleep, and under_wt. For my logistic model, the predictor variables are divorce, moves, friends, family.
+
+
+| **Variable** | **Role** | **Type** | **Description / Levels** |
+|----------------|----------------|----------------|-------------------------|
+| hhid | Identifier | Character | Household Identifier |
+| height | Quantitative Outcome | Numerical | Height in Centimeters |
+| anxiety | Binary Outcome | Binary Factor | Has a Doctor Determined the Child Has Anxiety? (Yes, No) |
+| meds | Predictor | Binary Factor | Currently Taking ADD/ADHD Medication? (Yes, No)| 
+| severity | Predictor | 3 Level Factor | Severity of Current ADD/ADHD (Mild, Moderate, Severe) |
+| age | Predictor | Numerical | Age (6–17 years) |
+| divorce | Predictor | Binary Factor | Experienced Divorce of Parents/Guardians (Yes, No) |
+| sleep | Predictor | 3 Level Factor | Average Number of Hours of Sleep in Past Week (Low, Ideal, High)|
+| moves | Predictor | Numerical | How Many Times Moved to New Address? (1-10)|
+| friends | Predictor | Binary Factor | Difficulty Making Friends? (None, Difficulty)|
+| family | Predictor | 4 Level Factor | Family in the Home (Married, Unmarried, Single, Other)|
+| under_wt | Predictor | Binary Factor | Did the Child Have a Low Birth Weight? (Yes, No) |
+| sex | Filter | Factor (Originally Binary) | Sex (Filtered for "female" in this analysis) |
+| dx_past | Filter | Factor (Originally Binary) | Has a Doctor Determined the Child Has ADD or ADHD? (Filtered for "yes" in this analysis to ensure official diagnosis) |
+| dx_now | Filter | Binary Factor | Current ADD/ADHD Diagnosis? (Filtered for "yes" in this analysis) |
+
+
+## Numerical Description
+
+```{r}
+data_codebook(NSCH23)
+```
+
+# Linear Regression Plans
+
+## My First Research Question
+
+Can height be effectively predicted using age, ADD/ADHD medication status, low birth weight, and sleep patterns in female children with ADD or ADHD, between the ages of 6-17?
+
+## My Quantitative Outcome
+
+My quantitative outcome is height. I am looking at the heights of female children who have a current diagnosis of ADD or ADHD and are aged 6-17 years. I chose this particular outcome due to the current lack of available research on attention deficit disorders in female populations, especially in children.
+
+```{r}
+
+NSCH23_6.2 <- NSCH23 %>% filter(!is.na(height))
+
+p1 <- ggplot(NSCH23_6.2, aes(sample = height)) +
+  geom_qq(col = "darkgreen") + geom_qq_line(col = "chartreuse") + 
+  labs(title = "Normal Q-Q plot of Height", x = "",
+       y = "Height (In.)")
+
+p2 <- ggplot(NSCH23_6.2, aes(x = height)) +
+  geom_histogram(binwidth = 10, col = "black", fill = "lightblue") +
+  labs(title = "Histogram of Height", x = "Height (cm)", y = "Count")
+
+p1 + p2
+
+```
+
+The distribution of height in the NSCH23 data, across 1715 subjects, shows a clear concentration around the 150 - 170 range of values. There is a very slight right skew, but an overall general bell-shape distribution can be observed in the above histogram.
+
+### Numerical Summary of My Linear Outcome
+
+```{r}
+Hmisc::describe(NSCH23$height)
+```
+
+```{r}
+mosaic::favstats(NSCH23$height)
+```
+
+```{r}
+NSCH23 |> tabyl(height) |> adorn_pct_formatting() |>
+  arrange(desc(n)) |> head(5)
+```
+
+157.5 cm is the most common value in my height variable, occurring in 9.4% of my subjects.
+
+```{r}
+sum(!is.na(NSCH23$height))
+```
+
+There is complete data on 1,665 of the 1,715 subjects' height values in the NSCH23 tibble.
+
+```{r}
+n_distinct(NSCH23$height)
+```
+
+Within height, there are exactly 47 different values for recorded height (in).
+
+### Summary Statements About My Outcome, Height
+
+My outcome is height. I have 1665 observations with complete data on height. I have 47 distinct values of height. There is a median height of approximately 157.5 cm in this data set, with a minimum value of 94 cm and a maximum of 190.5 cm. The mean height is approximately 59.8 inches, with a standard deviation in height of approximately 6.4 inches. The most common value for height is approximately 157.5 inches, which occurs in 9.4% of my subjects.
+
+## My Planned Predictors (Linear Model)
+
+My planned predictors for the linear model will be age, meds, severity, sleep, and under_wt.
+
+```{r}
+NSCH23 %>%
+  tabyl(severity, sleep, show_na = TRUE) %>%
+  adorn_totals(where = c("row", "col")) 
+```
+
+These five predictors are less than the allowed maximum of 4 + (1703-100)/100 = 20.03 ~ 20, out of the 1715 observations in NSCH23 as required by the Project A instructions.
+
+### Anticipated Direction of Effects
+
+I anticipate that height will have a positive association with meds, severity and sleep. I also anticipate that being positive for low birth weight will point to a lower height at the time of surveying. 
+
+### Missingness Summary
+
+Here is a report on missing data in my predictors for the linear model.
+
+```{r}
+lin_pred <- NSCH23 |> select(age, meds, severity, sleep, under_wt)
+
+miss_var_summary(lin_pred) |> filter(n_miss > 0)
+```
+
+```{r}
+miss_case_table(lin_pred)
+```
+
+I have complete data for all linear model predictors in 1618 (94.3%) of the 1715 rows in my data. I am missing 68 values (4.0%) for under_wt, 12 values (0.7%) for sleep, 11 values (0.64%) for severity, and 9 values for meds (0.53%).
+
+# Logistic Regression Plans
+
+## My Second Research Question
+
+How effectively can an anxiety diagnosis be predicted via age, use of ADD/ADHD medication, family structure, divorce, times moved, difficulty making friends, and hours of sleep in female children between the ages of 6-17?
+
+## My Binary Outcome
+
+The binary outcome I chose for this question is anxiety, defined as having been previously provided a diagnosis of anxiety by a medical professional. I chose this outcome because anxiety often is a co-occurring condition with ADD/ADHD and, due to this topic of study being relatively new in research, we lack depth in our understanding of this relationship.
+
+```{r}
+NSCH23 |> tabyl(anxiety)
+```
+
+## My Planned Predictors (Logistic Model)
+
+My planned predictors for this model will be age, meds, family, moves, friends, and sleep.
+
+### Anticipated Direction of Effects
+
+I anticipate that anxiety will occur at a higher frequency as age increases, higher in those who are currently taking medication for ADD/ADHD, higher in those who have less hours of total sleep and have a higher number of moves. I am also anticipating that severe difficulty making friends will be associated with a current diagnosis of anxiety. 
+
+### Missingness Summary
+
+```{r}
+log_pred <- NSCH23 |> select(age, meds, divorce, moves, friends, family)
+
+miss_var_summary(log_pred) |> filter(n_miss > 0)
+```
+
+There are a total of 6.6% missing values in my data, with the most occurring in divorce, family and moves, as listed in the next line. 
+
+```{r}
+miss_case_table(log_pred)
+```
+
+I have complete data for all of the logistic model predictors in 1602 (93.4%) of the 1715 rows in my data. I am missing 59 values (3.4%) for divorce, 45 values (2.6%) for family, 44 values (2.6%) for moves, 12 values (0.7%) for friends, and 9 values (0.53%)
+
+# Linear Regression Analyses
+
+## Missingness
+
+```{r}
+miss_var_summary(NSCH23) |> filter(n_miss > 0)
+```
+
+While missingness is relatively low in this data, I will be assuming they are missing at random and am performing a single imputation as a result. I chose to perform a single imputation because of my low (6.6%) missingness in the data and due to the assumption of MAR. 
+
+```{r}
+
+NSCH23_SI <- 
+  mice(NSCH23, m = 1, seed = 4322025, print = FALSE) |>
+  complete() |>
+  tibble()
+
+```
+
+```{r}
+n_miss(NSCH23_SI)
+```
+
+## Outcome Transformation
+
+```{r}
+NSCH23_T <- lm(height ~ age + meds + severity + sleep + under_wt, data = NSCH23_SI)
+
+#| fig-height: 12
+#| fig-width: 12
+
+boxCox(NSCH23_T)
+```
+
+According to the above plot, the Box-Cox approach would suggest that I transform the data by squaring the height variable. 
+
+```{r}
+p1 <- ggplot(NSCH23_SI, aes(sample = height^2)) +
+  geom_qq() + geom_qq_line(col = "hotpink") +
+  labs(title = "Height^2",
+       subtitle = "Normal Q-Q for Height^2")
+
+p2 <- ggplot(NSCH23_SI, aes(x = height^2)) +
+  geom_histogram(binwidth = 10, col = "black", fill = "blue") +
+  labs(title = "Histogram of Height^2", x = "Height (in.)", y = "Count") 
+
+p1 + p2 + 
+  plot_annotation("How well do we support a Normality assumption?")
+```
+
+Here, the plots for both the original and transformed versions of my outcome, height, show a decrease in normality after squaring. Due to this problem, I will scale my squared outcome and see if this fixes the issue with normality. 
+
+```{r}
+NSCH23_Sq <- lm(scale(height^2, center = TRUE, scale = TRUE) ~ 
+             age + meds+ severity+ sleep+ under_wt, data = NSCH23_SI)
+
+resids_NSCH23 <- tibble(raw = NSCH23_T$residuals, 
+                 sqr = NSCH23_Sq$residuals)
+
+p1 <- ggplot(resids_NSCH23, aes(sample = raw)) +
+  geom_qq() + geom_qq_line(col = "hotpink") +
+  labs(title = "Height",
+       subtitle = "Normal Q-Q for fit1 residuals")
+
+p2 <- ggplot(resids_NSCH23, aes(sample = sqr)) +
+  geom_qq() + geom_qq_line(col = "purple") +
+  labs(title = "Scaled Square of Height",
+       subtitle = "Normal Q-Q for fit2 residuals")
+
+p1 + p2 + 
+  plot_annotation("How well do we support a Normality assumption?")
+
+```
+
+There is still a decrease in normality, even after scaling my squared outcome. Because of this, I will not be proceeding with a transformed outcome, and will instead be proceeding with my original height data for the rest of the project. 
+
+## Scatterplot Matrix and Collinearity
+
+```{r}
+#| fig-height: 9
+
+ggpairs(NSCH23_SI, columns = c("age","meds","severity","sleep","under_wt"))
+```
+
+The key points to acknowledge from the scatterplot matrix above are the right skew in age, suggesting that higher ages are more common in the data set I am using, the imbalance in the binary levels of under_wt, and the imbalance shown in relationships between under_wt, sleep and severity.
+
+```{r}
+mA <- lm(height ~ age + meds + severity + sleep + under_wt, data = NSCH23_SI)
+
+car::vif(mA)
+```
+
+There are no obvious issues with multicollinearity, so no adjustments are needed. 
+
+## Model A
+
+### Fitting Model A
+
+```{r}
+mA <- lm(height ~ age + meds + severity + sleep + under_wt, data = NSCH23_SI)
+```
+
+
+```{r}
+dd <- datadist(NSCH23_SI)
+options(datadist = "dd")
+
+mA_OLS <- ols(height ~ age + meds + severity + sleep + under_wt, data = NSCH23_SI, x = TRUE, y = TRUE)
+```
+
+### Coefficient Estimates
+
+```{r}
+model_parameters(mA, ci = 0.90) |> print_md(digits = 3)
+```
+
+### Model A Effects
+
+```{r}
+plot(summary(mA_OLS, conf.int = 0.90))
+```
+
+```{r}
+summary(mA_OLS, conf.int = 0.90) |> kable(digits=3)
+```
+
+
+
+### Quality of Fit Summaries 
+
+```{r}
+model_performance(mA) |> print_md(digits = 3)
+```
+
+```{r}
+glance(mA) |>
+  select(r2 = r.squared, adjr2 = adj.r.squared, sigma, 
+         AIC, BIC, nobs, df, df.residual) |>
+  kable(digits = c(3, 3, 2, 1, 1, 0, 0, 0))
+```
+
+
+### Regression Diagnostics (Model A)
+
+```{r}
+#| fig-height: 8
+
+check_model(mA, detrend = FALSE)
+```
+
+Model A appears to perform less than ideally in the assumptions of normality. The posterior predictive check shows a fairly large difference between predicted and observed data, with observed data straying far away from predicted in the 60 - 70 range. The linearity plot shows a somewhat problematic difference between observed and predicted data, with a large dip between 55 and 65, roughly. There does appear to be some minor homoscedasticity, particularly towards the 60 - 65 range, similar to the other tests. There are no issues with influential observations or normality of residuals, with both of these plots avoiding violation of their corresponding assumptions. Lastly, collinearity does not appear to be an issue, with exception of under_wt with an approximate VIF of 9. Overall, model A has some issues with normality, and does violate the assumptions of normality.
+
+## Non-Linearity and Spearman $\rho^2$
+
+```{r}
+plot(spearman2(height ~ age + meds+ severity+ sleep+ under_wt, data = NSCH23_SI))
+```
+
+According to the above Spearman $\rho^2$ plot, age is the variable with the most predictive punch. Because of this, age is the ideal variable to apply as a non-linear term. I am adding a restricted cubic spline with 5 knots to age, adding 4 degrees of freedom to my model. Though it is only marginally further out than the other variables, I will also add an interaction term between age and sleep, adding an additional two degrees of freedom to the model. 
+
+## Model B
+
+### Fitting Model B
+
+```{r}
+mB <- lm(height ~ rcs(age, 4) + meds + severity + sleep + age %ia% sleep + under_wt, data = NSCH23_SI)
+```
+
+```{r}
+dd <- datadist(NSCH23_SI)
+options(datadist = "dd")
+
+mB_OLS <- ols(height ~ rcs(age, 4) + meds + severity + sleep + age %ia% sleep + under_wt, data = NSCH23_SI, x = TRUE, y = TRUE)
+```
+
+```{r}
+anova(mB)
+```
+
+For my model B, in both the lm and ols fits, I am adding a restricted cubic spline with 4 knots to age. This is due to its position on the Spearman $\rho^2$ plot above, suggesting it has the most predictive punch out of the other variables. Next, I am adding an interaction term between age and sleep, as sleep was listed as the variable with the second most predictive punch. In total, this adds 5 degrees of freedom to the main effects model. 
+
+### Coefficient Estimates
+
+```{r}
+tidy(mB, conf.int = TRUE, conf.level = 0.90) |>
+  select(term, estimate, se = std.error, 
+         low90 = conf.low, high90 = conf.high, 
+         p = p.value) |>
+  kable(digits = 3)
+```
+
+
+
+### Model B Effects
+
+```{r}
+plot(summary(mB_OLS, conf.int = 0.90))
+```
+
+### Quality of Fit Summaries
+
+```{r}
+summary(mB_OLS, conf.int = 0.90) |> kable(digits = 3)
+```
+
+```{r}
+model_performance(mB) 
+```
+
+```{r}
+glance(mB) |>
+  select(r2 = r.squared, adjr2 = adj.r.squared, sigma, 
+         AIC, BIC, nobs, df, df.residual) |>
+  kable(digits = c(3, 3, 2, 1, 1, 0, 0, 0))
+```
+
+### Regression Diagnostics (Model B)
+
+```{r}
+#| fig-height: 10
+check_model(mB, detrend = FALSE)
+```
+
+Model B shows some variation between the observed and predicted data in the posterior predictive check, but this is a much closer fit than was seen in the same plot for model A. The reference line for linearity stays relatively flat throughout the plot, with mild deviation on the left tail. There is slight homoscedasticity evidenced in the variance plot, with a mild downward curve on the right tail, but this does not appear to majorly violate the variance assumption. There seems to be no issue with influential observations. There is also clear uptick in collinearity, but this is due to the interaction term introduced in building model B. Lastly, normality shows some deviation in the left and right tails, suggesting mild violation of the normality assumption. 
+
+## Validating Models A and B
+
+```{r}
+set.seed(4321); (validA <- validate(mA_OLS))
+```
+
+```{r}
+set.seed(4321); (validB <- validate(mB_OLS))
+```
+
+### Validated $R^2$, and MSE as well as IC statistics
+
+| Model | Validated $R^2$ |Validated MSE |	AIC	       | BIC       |	df |
+|------:|-----------------|--------------|-------------|-----------|-----|
+|     A |           0.652 |      92.0663 |     12644.1 |	 12693.1 |   7 |
+|     B |           0.700 |       79.279 |     12383.1 |   12453.9 |	11 | 
+
+## Final Linear Regression Model
+
+I prefer Model B, because of its validated R2, MSE, AIC, and BIC values being superior to those of model A. Model B also showed much better alignment with the assumption of linearity, and a closer fit between observed and predicted data in the posterior predictive check than model A. While model B's performance is lacking in some areas, its performance here was overall more impressive than model A.
+
+### Winning Model's OLS Summary
+
+```{r}
+mB_OLS
+``` 
+
+### Effects Plot for Winning Model
+
+```{r}
+plot(summary(mB_OLS, conf.int = 0.90))
+```
+
+Here, the first biggest takeaway is that height is shown to have a strong and positive association with age, which intuitively makes sense. Next, meds and severity have a mild, negative association with height, and birth weight status seems to have a stronger negative effect on height.
+
+### Numerical Description of Effect Sizes
+
+```{r}
+summary(mB_OLS, conf.int = 0.90) |> kable(digits = 3)
+```
+
+
+The shown effect sizes for model B are after trying a few combinations of non-linear terms or lack thereof. After fitting the model a few different ways, I ended with the current combination, due to its having the least explosive effects on my predictors' effects. 
+
+### Effect Size Description
+
+Description of severity (ADD/ADHD): Let's say there are two subjects that have equal age, medication use, sleep, and underweight status, named Ginny and Lilly. If Ginny has severe ADD/ADHD, but Lilly has moderate ADD/ADHD, my model estimates that Ginny's height will be 1.14 cm lower than Lilly's, with a 90% confidence interval of (-2.31, 0.04) cm. 
+
+Description of birth weight status: Let's use the same two subjects as above, Ginny and Lilly, and assume equal age, medication use, severity, and sleep between them. If Ginny had was underweight at birth, but Lilly was not, my model estimates that Ginny's height will be 4.09 cm lower than Lilly's, with a 90% confidence interval of (-5.15, -3.04) cm. 
+
+
+### Prediction Plot for Winning Model
+
+```{r}
+ggplot(Predict(mB_OLS))
+```
+
+### Nomogram of Winning Model
+
+```{r}
+#| fig-height: 10
+#| fig-width: 10
+plot(nomogram(mB_OLS, fun = exp, funlabel = "Height"))
+```
+
+In the above nomogram, the results that have been suggested through effect size estimates and previous plots are confirmed here. We can see a clear, very mildly varied effect across the sleep categories when stratified among age, as well as a suggested negative effect of meds, severity and birth weight on height.
+
+### Prediction for a New Subject
+
+```{r}
+new_subject <- data.frame(
+  age = c(10, 10),
+  meds = factor(c("Yes", "No"), levels = c("Yes", "No")),
+  anxiety = factor(c("No", "No"), levels = c("Yes", "No")),
+  sleep = factor(c("Ideal", "Ideal"), levels = c("Low", "Ideal", "High")),
+  severity = factor(c("Severe", "Severe"), levels = c("Mild", "Moderate", "Severe")),
+  under_wt = factor(c("No", "No"), levels = c("Yes", "No")))
+
+pred_mB <- predict.lm(mB, newdata = new_subject, interval = "prediction", level = 0.90)
+
+pred_mB
+```
+
+I wanted to conclude my findings on model B by exploring the effect of meds on height a bit more, as it has consistently taken up the least space in my estimates, plots, and the nomogram generated for this model. Here, I am predicting the heights of two subjects whom I will call Nelly and Samantha. Both are the age of 10, have not been diagnosed with anxiety by a medical professional, get an ideal average amount of sleep per week, have severe ADD/ADHD, and were not underweight at birth. However, Nelly currently takes medication for her severe ADD/ADHD, while Samantha does not. According to the predictions of my model, Nelly would have a height of 142.1 cm, while Samantha's height would be 141.5 cm. 
+
+| **Predictor Values** | **Predicted Height** | **90% Prediction Interval** | 
+|----------------------|----------------------|-----------------------------|
+| age = 10, meds = Yes, anxiety = No, sleep = Ideal, severity = Severe, under_wt = No | 142.1 | (127.4, 156.8) cm
+| age = 10, meds = No, anxiety = No, sleep = Ideal, severity = Severe, under_wt = No | 141.5 | (126.8, 156.3) cm
+
+# Logistic Regression Analyses
+
+## Missingness
+
+```{r}
+miss_var_summary(NSCH23_SI) |> filter(n_miss > 0)
+```
+
+## Model Y
+
+### Fitting Model Y
+
+```{r}
+mY <- glm(anxiety ~ age + moves +  meds +  divorce +  friends +  family,
+            data = NSCH23_SI, family = binomial())
+
+summary(NSCH23_SI$anxiety)
+
+ddd <- datadist(NSCH23_SI)
+options(datadist = "ddd")
+
+mY_lrm <- lrm(anxiety ~ age +  meds +  divorce +  moves +  friends +  family,
+                 data = NSCH23_SI, x = TRUE, y = TRUE)
+```
+
+### Coefficient Estimates
+
+```{r}
+tidy(mY, exponentiate = TRUE, conf.int = TRUE, conf.level = 0.90) |>
+  select(term, estimate, se = std.error, 
+         low90 = conf.low, high90 = conf.high, p = p.value) |>
+  kable(digits = 3)
+```
+
+
+### Model Y Effects
+
+```{r}
+plot(summary(mY_lrm, conf.int = 0.90))
+```
+
+
+```{r}
+summary(mY_lrm, conf.int = 0.90) |> kable(digits = 3)
+```
+
+
+### Quality of Fit Summaries
+
+```{r}
+mY_lrm
+```
+
+```{r}
+glance(mY) |>
+  mutate(df = nobs - df.residual - 1) |>
+  select(AIC, BIC, df, df.residual, nobs) |>
+  kable(digits = 1)
+```
+
+
+### Confusion Matrix (Model Y)
+
+```{r}
+resY_aug <- augment(mY, type.predict = "response")
+```
+
+My prediction rule for this confusion matrix is that the fitted value of Pr(anxiety = Yes) needs to be greater than or equal to 0.5 for me to predict anxiety as 1. If it is not, I will instead predict 0.
+
+```{r}
+cm_Y <- caret::confusionMatrix(
+  data = factor(resY_aug$.fitted >= 0.5),
+  reference = factor(resY_aug$anxiety == "Yes"),
+  positive = "TRUE")
+
+cm_Y
+```
+
+## Non-Linearity and Spearman $\rho^2$ Plot
+
+```{r}
+plot(spearman2(anxiety ~ age +  meds +  divorce +  moves +  friends +  family,
+               data = NSCH23_SI))
+```
+
+Since age is a predictor for my logistic regression analysis as well, it is the variable with the most predictive punch for this model, according to the Spearman $\rho^2$ plot. Because of this, I am adding a restricted cubic spline with 4 knots to age, adding 3 degrees of freedom to my model. The variable with the next most predictive punch is friends, so I have added an interaction term between it and age. In total, this adds 5 degrees of freedom to the model.
+
+## Model Z
+
+### Fitting Model Z
+
+```{r}
+mZ <- glm(anxiety ~ rcs(age, 4) + meds + divorce + moves + friends + 
+            age %ia% friends + family,
+          data = NSCH23_SI, family = binomial())
+
+
+ddd <- datadist(NSCH23_SI)
+options(datadist = "ddd")
+
+mZ_lrm <- lrm(anxiety ~ rcs(age, 4) + meds + divorce + moves + friends + 
+                age %ia% friends + family,
+              data = NSCH23_SI, x = TRUE, y = TRUE)
+
+```
+
+```{r}
+anova(mZ)
+```
+
+For my logistic regression model Z, I am adding a restricted cubic spline with 4 knots to age, in following the Spearman $\rho^2$ plot from earlier. I am also adding an interaction term between age and friends. This results in a total of 4 added degrees of freedom to the main effects model. 
+
+### Tidied Odds Ratio Estimates (Model Z)
+
+```{r}
+tidy(mZ, exponentiate = TRUE, conf.int = TRUE, conf.level = 0.90) |>
+  select(term, estimate, se = std.error, 
+         low90 = conf.low, high90 = conf.high, p = p.value) |>
+  kable(digits = 3)
+```
+
+### Model Z Effects
+
+```{r}
+plot(summary(mZ_lrm, conf.int = 0.90))
+```
+
+```{r}
+summary(mZ_lrm, conf.int = 0.90) |> kable(digits = 3)
+```
+
+
+### Quality of Fit Summaries
+
+```{r}
+mZ_lrm
+```
+
+```{r}
+glance(mZ) |>
+  mutate(df = nobs - df.residual - 1) |>
+  select(AIC, BIC, df, df.residual, nobs) |>
+  kable(digits = 1)
+```
+
+
+### Confusion Matrix (Model Z)
+
+As in Model Y, my prediction rule for my Model Z confusion matrix is that the fitted value of Pr(anxiety = Yes) needs to be greater than or equal to 0.5 for me to predict anxiety is 1, and otherwise I predict 0.
+
+```{r}
+resZ_aug <- augment(mZ, type.predict = "response")
+```
+
+By applying this prediction rule, the following confusion matrix is produced.
+
+```{r}
+cm_Z <- caret::confusionMatrix(
+  data = factor(resZ_aug$.fitted >= 0.5),
+  reference = factor(resZ_aug$anxiety == "Yes"),
+  positive = "TRUE")
+
+cm_Z
+```
+
+
+| Model |      Classification Rule |  Sensitivity |	Specificity | Pos. Pred. Value |
+|------:|--------------------------|--------------|-------------|------------------|
+|     Y | Pr(Anxiety = Yes) >= 0.5 |        0.159 |       0.605 |            0.389 |
+|     Z | Pr(Anxiety = Yes) >= 0.5 |        0.181 |       0.572 |            0.401 |
+
+
+## Validating Models Y and Z
+
+```{r}
+set.seed(4323); (validY <- validate(mY_lrm))
+```
+
+```{r}
+set.seed(4324); (validZ <- validate(mZ_lrm))
+```
+
+### Validated $R^2$ and $C$ statistics for each model
+
+```{r}
+# Calculating C Statistic for Model Y
+(0.3833/2) + 0.5
+```
+
+```{r}
+# Calculating C Statistic for Model Z
+(0.3855/2) + 0.5
+```
+
+| Model | Validated $R^2$ |  Validated C |	   AIC	   |    BIC    |	df |
+|------:|-----------------|--------------|-------------|-----------|-----|
+|     Y |          0.1378 |       0.6917 |      2119.5 |    2168.6 |	 8 | 
+|     Z |          0.1410 |       0.6928 |      2110.6 |	  2175.9 |  11 |
+
+
+## Final Logistic Regression Model
+
+I prefer Model `Z` due to its better AIC, BIC, validated C statistic. Both of model Z's values for AIC and BIC are lower than model Y's, and its validated C statistic is higher (closer to 1) than model Y.
+
+### Winning Model's Parameter Estimates
+
+```{r}
+mZ_lrm
+```
+
+### Winning Model Effect Sizes
+
+```{r}
+plot(summary(mZ_lrm, conf.int = 0.90))
+```
+
+
+### Numerical Description of Effect Sizes
+
+```{r}
+summary(mZ_lrm, conf.int = 0.90) |> kable(digits = 3)
+```
+
+### Effect Size Description
+
+For the following effect size estimates, we will use two subjects. These two subjects are named Matilda and Mara.
+
+Description of age:
+Let's assume Matilda and Mara have experienced the same number of moves, medication status, family structure, and level of difficulty making and keeping friendships. If Matilda is 16 years old and Mara is 10, my model estimates that Matilda has 0.888 lower odds of having anxiety compared to Mara. The 90% confidence interval for this effect is (-1.168, -0.607).
+
+Description of meds:
+We can assume here that Matilda and Mara now are the same age and have the same medication status and family structure. If Matilda has no difficulty making or keeping friends and Mara has difficulty making friends, my model estimates that Matilda has 0.958 higher odds of an anxiety diagnosis than Mara. The 90% confidence interval for this effect is (0.779, 1.138).
+
+Description of under_wt:
+In this last description, we are assuming Matilda and Mara are the same age and have the same medication status, family structure, and friendship status. However, if Matilda was underweight at birth while Mara was not, my model estimates that Matilda has 4.045 higher odds of anxiety compared to Mara. The 90% confidence interval for this effect is (2.990, 5.099).
+
+### Validated $R^2$ and $C$ statistic for Winning Model
+
+Model `Z`'s validated R^2 value is 0.1378, and its C statistic is 0.6917, as shown in section 9.5.1.
+
+### Nomogram of Winning Model
+
+```{r}
+#| fig-height: 10
+plot(nomogram(mZ_lrm, fun = plogis, 
+              funlabel = "Pr(anxiety == Yes)"))
+```
+
+According to this nomogram, my model shows that no difficulty making or keeping friendships leads to a higher risk for anxiety than those difficulty. It also shows that as the number of moves someone has experienced increases, the probability of anxiety decreases. Medication is also associated with reduced probability of anxiety, while not taking medication has a higher probability. Divorce is shown here as having a protective effect, with my model predicting that not experiencing divorce would lead to a higher probability of anxiety. Lastly, a family structure other than single, unmarried, or married is shown to correspond with a higher probability of anxiety.
+
+### Predictions for Two New Subjects
+
+```{r}
+new_subs <- 
+  data.frame(age = c(12, 12), meds = c("Yes", "Yes"), divorce = c("Yes","No"), moves = c(3, 3), friends = c("None","None"), family = c("Single","Single"))
+
+new_subs <- new_subs %>% mutate(across(where(is.character), as.factor))
+
+pred3 <- predict(mY, newdata = new_subs, type = "response")
+
+pred3
+```
+
+There are two subjects in this prediction, whom we will call Agatha and Christie. We can say that they are both 12 years old, currently take medication for ADD/ADHD, have moved addresses 3 times, have no difficulty making friends, and live in a single-parent household. However, Agatha has experienced the divorce of a parent, while Christie has not. According to the predicted values above, the risk for anxiety in Agatha is 0.42, while it is 0.50 for Christie.
+
+# Discussion
+
+## Answering My Research Questions
+
+Can height be effectively predicted using age, ADD/ADHD medication status, low birth weight, and sleep patterns in female children with ADD or ADHD, between the ages of 6-17?
+
+Height can be effectively predicted using these factors, however, my model appears to need some adjustments. There were some assumption violations in both of my linear regression models, with model B having somewhat better performance. This would need to be heavily adjusted, I assume, for any further serious analysis. My model showed that height is impacted most by low birth weight, severity of ADD/ADHD, sleep, and meds, in descending order. 
+
+How effectively can an anxiety diagnosis be predicted via age, use of ADD/ADHD medication, family structure, divorce, times moved, difficulty making friends, and hours of sleep in female children between the ages of 6-17?
+
+An anxiety diagnosis may be able to be predicted via these factors, but my models need to be extensively verified to rule out them being incorrect for the analysis of this question. My models predicted very counterintuitive results, which could be exciting if there was no existing literature clearly going against their claims. My model predicted that higher number of moves, occurrence of divorce, and difficulty making or keeping friendships lessened probability of anxiety, which is not the direction I had anticipated, to say the least. 
+
+## Thoughts on Project A
+
+Question 3: What was the most confusing part of doing the project, and how did you get past it?
+
+The title for most confusing part of this project is tied for me between data cleaning and trying to understand my results for the logistic regression analysis. My results for the logistic regression were completely counterintuitive, which led me to spend too much time reloading my data in different ways and try different ways of cleaning/organizing variables, to no avail. I decided to simply interpret it the way it was and mention they are counterintuitive in my interpretation. 
+
+Question 4: What was the most useful thing you learned while doing the project, and why?
+
+The most useful thing I learned in this project is that, when dealing with raw data, there are so many unknown obstacles you can encounter *just* in the ingesting and cleaning process. I realize this is likely a no-brainer, but this was the first time I had ever ingested, cleaned, and organized data from a data set that was not provided to me. Having to make sure I understood how each variable was collected, how it was coded, check for explanations of any recoding the collecting institution may have done was all extremely new to me.
+
+# Affirmation
+
+I am certain that it is completely appropriate for these data to be shared with anyone, without any conditions. There are no concerns about privacy or security.
+
+# References
+
+1.  The National Survey of Children's Health (NSCH) is an annual survey, conducted by the U.S. Census Bureau. This survey collects national and state data on health factors and well-being for children between the ages of 0-17 years. Data is collected via mailed surveys or online surveys provided via a mailed invitation (including a screener questionnaire to determine household child eligibility for subsampling). <https://www.census.gov/programs-surveys/nsch.html>
+
+# Session Information
+
+```{r}
+xfun::session_info()
+```
